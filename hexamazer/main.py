@@ -2,6 +2,8 @@ import cv2
 import math
 import numpy as np
 import pandas as pd
+import argparse
+from pathlib import Path
 
 kernel_3 = np.ones((3, 3), np.uint8)
 kernel_5 = np.ones((5, 5), np.uint8)
@@ -67,13 +69,14 @@ def centroid(cnt):
 
 
 class CameraView:
-    def __init__(self, x, y, width, height, num_frames, led_pos, thresh_mask=100, thresh_detect=35):
+    def __init__(self, name, x, y, width, height, num_frames, led_pos, thresh_mask=100, thresh_detect=35):
+        self.name = name
         self.x = x
         self.y = y
         self.width = width
         self.height = height
         self.thresh_mask = thresh_mask
-        self.thresh_detect = 255 - thresh_detect  # because we invert the image before thersholding
+        self.thresh_detect = 255 - thresh_detect  # because we invert the image before thresholding
 
         self.led_pos = (led_pos[0] - x, led_pos[1] - y)
 
@@ -82,14 +85,9 @@ class CameraView:
         self.frame = {}
 
 
-        self.results = pd.DataFrame(index=range(num_frames))
-        print(self.results)
-        self.result_position = np.empty((num_frames, 2))
-        self.result_largest_area = np.empty(num_frames)
-        self.result_sum_area = np.empty(num_frames)
-        self.led_state = np.empty(num_frames)
-
-
+        self.results = pd.DataFrame(index=range(num_frames),
+                                    columns=['largest_area', 'largest_x', 'largest_y',
+                                             'sum_area', 'led_state'])
 
     def update(self, frame, n):
         sub_frame = frame[self.y:self.y + self.height, self.x:self.x + self.width].copy()
@@ -114,7 +112,7 @@ class CameraView:
         masked = cv2.bitwise_not(foi) * (self.frame['mask'] // 255)
         self.frame['masked'] = cv2.morphologyEx(masked, cv2.MORPH_OPEN, kernel_3)
 
-        # thresold masked image to find mouse
+        # threshold masked image to find mouse
         _, thresh = cv2.threshold(self.frame['masked'], self.thresh_detect, 255, cv2.THRESH_BINARY)
         self.frame['thresh'] = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel_3)
 
@@ -133,12 +131,13 @@ class CameraView:
                     largest_cnt = cnt
 
         # store per-frame results
-        self.result_largest_area[n] = largest_area
-        self.result_sum_area[n] = sum_area
+        self.results['largest_area'][n] = largest_area
+        self.results['sum_area'][n] = sum_area
         cv2.drawContours(self.frame['raw'], contours, -1, (150, 150, 0), 3)
         if largest_cnt is not None:
             cx, cy = centroid(largest_cnt)
-            self.result_position[n, :] = cx, cy
+            self.results['largest_x'][n] = cx
+            self.results['largest_y'][n] = cy
             cv2.drawContours(self.frame['raw'], [largest_cnt], 0, (0, 0, 255), 3)
             overlay(self.frame['raw'],
                     text='{}, {}\nA: {}'.format(cx, cy, largest_area),
@@ -149,7 +148,11 @@ class CameraView:
         led_state = self.frame['grey'][self.led_pos[1], self.led_pos[0]] > LED_THRESHOLD
         overlay(self.frame['raw'], text='ON' if led_state else 'OFF',
                 x=self.led_pos[0] + 5, y=self.led_pos[1] + 5, f_scale=.6)
-        self.led_state[n] = led_state
+        self.results['led_state'][n] = led_state
+
+    def store(self, path):
+        self.results.to_pickle(str(path) + '.{}.hxm_pickle'.format(self.name))
+
 
 class HexAMazer:
     frame_types = ['raw', 'grey', 'val', 'thresh', 'mask', 'masked', 'hsv', 'hue', 'sat']
@@ -157,6 +160,10 @@ class HexAMazer:
     def __init__(self, vid_path, display=True, start_frame=0):
         cv2.destroyAllWindows()
         self.__start_frame = start_frame
+
+        self.path = Path(vid_path).resolve()
+        if not self.path.exists():
+            raise FileNotFoundError(str(self.path))
 
         self.capture = cv2.VideoCapture(vid_path)
         self.num_frames = int(self.capture.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -171,8 +178,10 @@ class HexAMazer:
         self.__padding = math.floor((math.log(self.num_frames, 10))) + 1
         self.__replay_fps = int(self.capture.get(cv2.CAP_PROP_FPS))
 
-        self.cam_views = [CameraView(x=0, y=0, width=800, height=600, num_frames=self.num_frames, led_pos=LED_POSITIONS[0]),
-                          CameraView(x=0, y=600, width=800, height=600, num_frames=self.num_frames, led_pos=LED_POSITIONS[1])]
+        self.cam_views = [CameraView(x=0, y=0, width=800, height=600, name='top',
+                                     num_frames=self.num_frames, led_pos=LED_POSITIONS[0]),
+                          CameraView(x=0, y=600, width=800, height=600, name='bottom',
+                                     num_frames=self.num_frames, led_pos=LED_POSITIONS[1])]
         self.trials = []
         self.current_trial = None
 
@@ -199,7 +208,7 @@ class HexAMazer:
 
             if self.frame is None:
                 print('No frame returned.')
-                break
+                self.quit()
 
             if self.rotate_frame:
                 self.frame = np.rot90(self.frame).copy()
@@ -267,7 +276,7 @@ class HexAMazer:
 
         # up, speed up
         elif key == 38:
-            self.__replay_fps += 5
+            self.__replay_fps = min(1000, self.__replay_fps + 5)
             #print('Up')
 
         # down, slow down
@@ -290,7 +299,7 @@ class HexAMazer:
             self.__replay_fps = 15
         elif key == ord('f'):
             self.__replay_fps = 30
-        elif key == ord('F'):
+        elif key == ord('h'):
             self.__replay_fps = 500
 
         # set trial start/end labels
@@ -337,5 +346,16 @@ class HexAMazer:
         cv2.destroyAllWindows()
         self.capture.release()
 
+        for cv in self.cam_views:
+            cv.store(self.path)
+
+        with open(str(self.path) + 'trials.csv', 'w') as trials_csv:
+            for t in self.trials:
+                trials_csv.write('{start}, {end}'.format(start=t[0], end=t[1]))
+
 if __name__ == '__main__':
-    hx = HexAMazer('C:/Users/reichler/data/hex_maze/x265.mp4')
+    parser = argparse.ArgumentParser()
+    parser.add_argument('path')
+
+    cli_args = parser.parse_args()
+    hx = HexAMazer(cli_args.path)
