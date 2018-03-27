@@ -12,6 +12,43 @@ LED_POSITIONS = [(377, 445), (538, 715)]
 LED_THRESHOLD = 70
 
 MIN_MOUSE_AREA = 50
+MIN_DIST_TO_NODE = 100
+
+NODES_A = {1: {'use': None, 'x': 73, 'y': 66},
+           2: {'use': None, 'x': 211, 'y': 6},
+           3: {'use': None, 'x': 345, 'y': 81},
+           4: {'use': None, 'x': 486, 'y': 23},
+           5: {'use': None, 'x': 613, 'y': 100},
+           6: {'use': None, 'x': 48, 'y': 233},
+           7: {'use': None, 'x': 334, 'y': 233},
+           8: {'use': None, 'x': 620, 'y': 251},
+           9: {'use': None, 'x': 186, 'y': 313},
+           10: {'use': None, 'x': 476, 'y': 322},
+           11: {'use': None, 'x': 765, 'y': 335},
+           12: {'use': None, 'x': 165, 'y': 481},
+           13: {'use': None, 'x': 472, 'y': 495},
+           14: {'use': None, 'x': 768, 'y': 508},
+           15: {'use': None, 'x': 314, 'y': 573},
+           16: {'use': None, 'x': 625, 'y': 592}}
+
+NODES_B = {6: {'use': None, 'x': 186, 'y': 611},
+           7: {'use': None, 'x': 448, 'y': 615},
+           8: {'use': None, 'x': 718, 'y': 625},
+           9: {'use': None, 'x': 309, 'y': 689},
+           10: {'use': None, 'x': 583, 'y': 690},
+           12: {'use': None, 'x': 310, 'y': 831},
+           13: {'use': None, 'x': 591, 'y': 837},
+           15: {'use': None, 'x': 453, 'y': 913},
+           16: {'use': None, 'x': 746, 'y': 912},
+           17: {'use': None, 'x': 43, 'y': 689},
+           18: {'use': None, 'x': 22, 'y': 828},
+           19: {'use': None, 'x': 150, 'y': 908},
+           20: {'use': None, 'x': 148, 'y': 1078},
+           21: {'use': None, 'x': 297, 'y': 1171},
+           22: {'use': None, 'x': 460, 'y': 1082},
+           23: {'use': None, 'x': 614, 'y': 1173},
+           24: {'use': None, 'x': 760, 'y': 1080}}
+
 
 def fmt_time(s, minimal=False):
     """
@@ -20,31 +57,31 @@ def fmt_time(s, minimal=False):
         minimal: Flag, if true, only return strings for times > 0, leave rest outs
     Returns: String formatted 99h 59min 59.9s, where elements < 1 are left out optionally.
     """
-    ms = s-int(s)
+    ms = s - int(s)
     s = int(s)
     if s < 60 and minimal:
-        return "{s:02.3f}s".format(s=s+ms)
+        return "{s:02.3f}s".format(s=s + ms)
 
     m, s = divmod(s, 60)
     if m < 60 and minimal:
-        return "{m:02d}min {s:02.3f}s".format(m=m, s=s+ms)
+        return "{m:02d}min {s:02.3f}s".format(m=m, s=s + ms)
 
     h, m = divmod(m, 60)
-    return "{h:02d}h {m:02d}min {s:02.3f}s".format(h=h, m=m, s=s+ms)
+    return "{h:02d}h {m:02d}min {s:02.3f}s".format(h=h, m=m, s=s + ms)
 
 
-def overlay(frame, text, x=3, y=3, f_scale=1.):
+def overlay(frame, text, x=3, y=3, f_scale=1., color=None):
     f_h = int(13 * f_scale)
     x_ofs = x
     y_ofs = y + f_h
     lines = text.split('\n')
 
-    if frame.ndim < 3:
-        color = (255)
-        color_bg = (0)
-    else:
-        color = (255, 255, 255)
-        color_bg = (0, 0, 0)
+    if color is None:
+        if frame.ndim < 3:
+            color = (255)
+        else:
+            color = (255, 255, 255)
+    color_bg = [0 for _ in color]
 
     for n, line in enumerate(lines):
         cv2.putText(frame,
@@ -61,15 +98,18 @@ def overlay(frame, text, x=3, y=3, f_scale=1.):
                     color=color,
                     lineType=cv2.LINE_AA)
 
+
 def centroid(cnt):
     M = cv2.moments(cnt)
     cx = int(M['m10'] / M['m00'])
     cy = int(M['m01'] / M['m00'])
     return cx, cy
 
+def distance(x1, y1, x2, y2):
+    return math.sqrt((x1-x2)**2 + (y1-y2)**2)
 
 class CameraView:
-    def __init__(self, name, x, y, width, height, num_frames, led_pos, thresh_mask=100, thresh_detect=35):
+    def __init__(self, name, x, y, width, height, num_frames, led_pos, nodes, thresh_mask=100, thresh_detect=35):
         self.name = name
         self.x = x
         self.y = y
@@ -79,11 +119,11 @@ class CameraView:
         self.thresh_detect = 255 - thresh_detect  # because we invert the image before thresholding
 
         self.led_pos = (led_pos[0] - x, led_pos[1] - y)
+        self.nodes = nodes
 
         self.use_val_frame = True
 
         self.frame = {}
-
 
         self.results = pd.DataFrame(index=range(num_frames),
                                     columns=['largest_area', 'largest_x', 'largest_y',
@@ -94,9 +134,9 @@ class CameraView:
         self.frame['raw'] = sub_frame
         self.frame['grey'] = cv2.cvtColor(self.frame['raw'], cv2.COLOR_BGR2GRAY)
         self.frame['hsv'] = cv2.cvtColor(self.frame['raw'], cv2.COLOR_BGR2HSV)
-        self.frame['hue'] = self.frame['hsv'][:,:,0]
-        self.frame['sat'] = self.frame['hsv'][:,:,1]
-        self.frame['val'] = self.frame['hsv'][:,:,2]
+        self.frame['hue'] = self.frame['hsv'][:, :, 0]
+        self.frame['sat'] = self.frame['hsv'][:, :, 1]
+        self.frame['val'] = self.frame['hsv'][:, :, 2]
 
         if not self.use_val_frame:
             foi = self.frame['grey']
@@ -134,6 +174,10 @@ class CameraView:
         self.results['largest_area'][n] = largest_area
         self.results['sum_area'][n] = sum_area
         cv2.drawContours(self.frame['raw'], contours, -1, (150, 150, 0), 3)
+
+        closest_node = None
+        closest_distance = 1e12
+
         if largest_cnt is not None:
             cx, cy = centroid(largest_cnt)
             self.results['largest_x'][n] = cx
@@ -143,6 +187,21 @@ class CameraView:
                     text='{}, {}\nA: {}'.format(cx, cy, largest_area),
                     x=(min(cx + 15, 700)),
                     y=cy + 15)
+
+            # Find closest node
+            for node_id, node in self.nodes.items():
+                dist = distance(cx, cy, node['x'] - self.x, node['y'] - self.y)
+                if dist < closest_distance and dist < MIN_DIST_TO_NODE:
+                    closest_distance = dist
+                    closest_node = node_id
+
+        #Label nodes
+        for node_id, node in self.nodes.items():
+            color = (255, 0, 0) if node_id == closest_node else (255, 255, 255)
+            cv2.circle(self.frame['raw'], (node['x'] - self.x, node['y'] - self.y), MIN_DIST_TO_NODE//2, color)
+
+            overlay(self.frame['raw'], text=str(node_id), color=color,
+                    x=node['x'] - self.x, y=node['y'] - self.y, f_scale=2.)
 
         # detect LED
         led_state = self.frame['grey'][self.led_pos[1], self.led_pos[0]] > LED_THRESHOLD
@@ -178,9 +237,9 @@ class HexAMazer:
         self.__padding = math.floor((math.log(self.num_frames, 10))) + 1
         self.__replay_fps = int(self.capture.get(cv2.CAP_PROP_FPS))
 
-        self.cam_views = [CameraView(x=0, y=0, width=800, height=600, name='top',
+        self.cam_views = [CameraView(x=0, y=0, width=800, height=600, name='top', nodes=NODES_A,
                                      num_frames=self.num_frames, led_pos=LED_POSITIONS[0]),
-                          CameraView(x=0, y=600, width=800, height=600, name='bottom',
+                          CameraView(x=0, y=600, width=800, height=600, name='bottom', nodes=NODES_B,
                                      num_frames=self.num_frames, led_pos=LED_POSITIONS[1])]
         self.trials = []
         self.current_trial = None
@@ -201,14 +260,14 @@ class HexAMazer:
             # if new frames need to be handled
             if (not self.paused) or self.force_move_frames:
                 if self.force_move_frames:
-                    self.move_rel(self.force_move_frames-1)
+                    self.move_rel(self.force_move_frames - 1)
                     self.force_move_frames = 0
                 self.frame = self.grab()
-
 
             if self.frame is None:
                 print('No frame returned.')
                 self.quit()
+                break
 
             if self.rotate_frame:
                 self.frame = np.rot90(self.frame).copy()
@@ -231,21 +290,22 @@ class HexAMazer:
                               'paused: {pause}\n' \
                               'play fps: {fps}\n' \
                               'pressed: {pressed} {char_pressed}' \
-                                   .format(n=curr_pos,
-                                            pad=self.__padding,
-                                            t=fmt_time(curr_pos / 15.),
-                                            key=self.frame_types[self.showing],
-                                            pause=self.paused,
-                                            fps=self.__replay_fps,
-                                            pressed=self.pressed_key if self.pressed_key > 0 else '',
-                                            char_pressed='({})'.format(
-                                              character) if self.pressed_key > 0 else '')
+                    .format(n=curr_pos,
+                            pad=self.__padding,
+                            t=fmt_time(curr_pos / 15.),
+                            key=self.frame_types[self.showing],
+                            pause=self.paused,
+                            fps=self.__replay_fps,
+                            pressed=self.pressed_key if self.pressed_key > 0 else '',
+                            char_pressed='({})'.format(
+                                character) if self.pressed_key > 0 else '')
 
                 overlay(self.disp_frame, text=overlay_str)
 
-                overlay_str = 'Trial active: {trial} ({n_trials} total)'.format(trial=self.current_trial+1 if self.current_trial is not None else None,
-                                                                           n_trials=len(self.trials))
-                overlay(self.disp_frame, text=overlay_str, x=self.frame_width//4, f_scale=1.5)
+                overlay_str = 'Trial active: {trial} ({n_trials} total)'.format(
+                    trial=self.current_trial + 1 if self.current_trial is not None else None,
+                    n_trials=len(self.trials))
+                overlay(self.disp_frame, text=overlay_str, x=self.frame_width // 4, f_scale=1.5)
 
                 cv2.imshow('Hex-A-Mazer', self.disp_frame)
                 self.process_key(cv2.waitKey(int(1000 / self.__replay_fps)))
@@ -277,12 +337,12 @@ class HexAMazer:
         # up, speed up
         elif key == 38:
             self.__replay_fps = min(1000, self.__replay_fps + 5)
-            #print('Up')
+            # print('Up')
 
         # down, slow down
         elif key == 40:
             self.__replay_fps = max(5, self.__replay_fps - 5)
-            #print('Down')
+            # print('Down')
 
         # left, jump X frames back
         elif key == ord('<'):
@@ -352,6 +412,7 @@ class HexAMazer:
         with open(str(self.path) + 'trials.csv', 'w') as trials_csv:
             for t in self.trials:
                 trials_csv.write('{start}, {end}'.format(start=t[0], end=t[1]))
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
