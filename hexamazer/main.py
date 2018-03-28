@@ -6,6 +6,10 @@ import pandas as pd
 import argparse
 from pathlib import Path
 
+from hexamazer.VideoCapture import VideoCapture
+
+CAPTURE_MODULE = cv2.VideoCapture
+
 kernel_3 = np.ones((3, 3), np.uint8)
 kernel_5 = np.ones((5, 5), np.uint8)
 
@@ -15,7 +19,7 @@ LED_THRESHOLD = 70
 MIN_MOUSE_AREA = 50
 MIN_DIST_TO_NODE = 100
 
-STACKING_FUN = np.vstack
+STACKING_FUN = np.hstack
 
 NODES_A = {1: {'use': None, 'x': 73, 'y': 66},
            2: {'use': None, 'x': 211, 'y': 6},
@@ -194,14 +198,18 @@ class CameraView:
         closest_distance = 1e12
 
         if largest_cnt is not None:
+            # center coordinates of contour
             cx, cy = centroid(largest_cnt)
             self.results['largest_x'][n] = cx
             self.results['largest_y'][n] = cy
+
+            # draw largest contour and contour label
             cv2.drawContours(self.frame['raw'], [largest_cnt], 0, (0, 0, 255), 3)
             overlay(self.frame['raw'],
                     text='{}, {}\nA: {}'.format(cx, cy, largest_area),
                     x=(min(cx + 15, 700)),
                     y=cy + 15)
+            cv2.circle(self.frame['raw'], (cx, cy), 3, color=(255, 255, 255) )
 
             # Find closest node
             for node_id, node in self.nodes.items():
@@ -225,7 +233,9 @@ class CameraView:
         self.results['led_state'][n] = led_state
 
     def store(self, path):
-        self.results.to_pickle(str(path) + '.{}.hxm_pickle'.format(self.name))
+        out_path = str(path) + '.{}.hxm_pickle'.format(self.name)
+        self.results.to_pickle(out_path)
+        print('Results for <{}> stored at {}'.format(self.name, out_path))
 
 
 class HexAMazer:
@@ -238,12 +248,14 @@ class HexAMazer:
         if not self.path.exists():
             raise FileNotFoundError(str(self.path))
 
-        self.capture = cv2.VideoCapture(vid_path)
+        self.capture = CAPTURE_MODULE(vid_path)
+        if hasattr(self.capture, 'start'):
+            self.capture.start()
+
+
         self.num_frames = int(self.capture.get(cv2.CAP_PROP_FRAME_COUNT))
         self.frame_width = int(self.capture.get(cv2.CAP_PROP_FRAME_WIDTH))
         self.frame_height = int(self.capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
-
-        self.reset_capture()
 
         self.frame = None
         self.disp_frame = None
@@ -422,15 +434,17 @@ class HexAMazer:
     def quit(self):
         self.alive = False
         cv2.destroyAllWindows()
-        self.capture.release()
+        if hasattr(self.capture, 'stop'):
+            self.capture.stop()
 
         for cv in self.cam_views:
             cv.store(self.path)
 
-        with open(str(self.path) + 'trials.csv', 'w') as trials_csv:
+        trials_csv_path = str(self.path) + 'trials.csv'
+        with open(trials_csv_path, 'w') as trials_csv:
             for t in self.trials:
-                trials_csv.write('{start}, {end}'.format(start=t[0], end=t[1]))
-
+                trials_csv.write('{start}, {end}\n'.format(start=t[0], end=t[1]))
+        print('Trial start/end written to {}'.format(trials_csv_path))
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
