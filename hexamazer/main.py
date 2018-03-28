@@ -1,5 +1,6 @@
 import cv2
 import math
+import time
 import numpy as np
 import pandas as pd
 import argparse
@@ -13,6 +14,8 @@ LED_THRESHOLD = 70
 
 MIN_MOUSE_AREA = 50
 MIN_DIST_TO_NODE = 100
+
+STACKING_FUN = np.vstack
 
 NODES_A = {1: {'use': None, 'x': 73, 'y': 66},
            2: {'use': None, 'x': 211, 'y': 6},
@@ -70,12 +73,7 @@ def fmt_time(s, minimal=False):
     return "{h:02d}h {m:02d}min {s:02.3f}s".format(h=h, m=m, s=s + ms)
 
 
-def overlay(frame, text, x=3, y=3, f_scale=1., color=None):
-    f_h = int(13 * f_scale)
-    x_ofs = x
-    y_ofs = y + f_h
-    lines = text.split('\n')
-
+def overlay(frame, text, x=3, y=3, f_scale=1., color=None, origin='left', thickness=1):
     if color is None:
         if frame.ndim < 3:
             color = (255)
@@ -83,20 +81,37 @@ def overlay(frame, text, x=3, y=3, f_scale=1., color=None):
             color = (255, 255, 255)
     color_bg = [0 for _ in color]
 
+    f_h = int(13 * f_scale)
+    x_ofs = x
+    y_ofs = y + f_h
+
+    lines = text.split('\n')
+
     for n, line in enumerate(lines):
+        text_size, _ = cv2.getTextSize(line, fontFace=cv2.FONT_HERSHEY_PLAIN,
+                                       fontScale=f_scale, thickness=thickness+1)
+        if origin == 'right':
+            text_x =  x_ofs - text_size[0]
+        else:
+            text_x = x_ofs
+
+        # draw text outline
         cv2.putText(frame,
-                    line, (x_ofs, y_ofs + n * f_h),
+                    line, (text_x, y_ofs + n * f_h),
                     fontFace=cv2.FONT_HERSHEY_PLAIN,
                     fontScale=f_scale,
                     color=color_bg,
                     lineType=cv2.LINE_AA,
-                    thickness=3)
+                    thickness=thickness + 1)
+
+        # actual text
         cv2.putText(frame,
-                    line, (x_ofs, y_ofs + n * f_h),
+                    line, (text_x, y_ofs + n * f_h),
                     fontFace=cv2.FONT_HERSHEY_PLAIN,
                     fontScale=f_scale,
                     color=color,
-                    lineType=cv2.LINE_AA)
+                    lineType=cv2.LINE_AA,
+                    thickness=thickness)
 
 
 def centroid(cnt):
@@ -217,7 +232,6 @@ class HexAMazer:
     frame_types = ['raw', 'grey', 'val', 'thresh', 'mask', 'masked', 'hsv', 'hue', 'sat']
 
     def __init__(self, vid_path, display=True, start_frame=0):
-        cv2.destroyAllWindows()
         self.__start_frame = start_frame
 
         self.path = Path(vid_path).resolve()
@@ -256,6 +270,7 @@ class HexAMazer:
         self.loop()
 
     def loop(self):
+        frame_proc_time = time.time()
         while self.alive:
             # if new frames need to be handled
             if (not self.paused) or self.force_move_frames:
@@ -281,26 +296,29 @@ class HexAMazer:
 
                 # Add text overlay
                 try:
-                    character = chr(self.pressed_key)
+                    character = chr(self.pressed_key) if self.pressed_key > 0 else None
                 except ValueError:
                     character = '??'
-                overlay_str = '#{n:0{pad}d}\n' \
-                              '{t}\n' \
+                elapsed =  (time.time() - frame_proc_time) * 1000
+                ui_wait = 1000 / self.__replay_fps
+                frame_proc_time = time.time()
+                overlay_str = '{t}\n' \
+                              '#{n:0{pad}d}\n' \
                               'frame: {key}\n' \
                               'paused: {pause}\n' \
-                              'play fps: {fps}\n' \
-                              'pressed: {pressed} {char_pressed}' \
+                              't_wait: {wait_time:.0f} ms\n' \
+                              't_loop: {proc_time:3.0f} ms\n'\
+                              'input: {pressed} {char_pressed}' \
                     .format(n=curr_pos,
                             pad=self.__padding,
                             t=fmt_time(curr_pos / 15.),
                             key=self.frame_types[self.showing],
                             pause=self.paused,
-                            fps=self.__replay_fps,
-                            pressed=self.pressed_key if self.pressed_key > 0 else '',
-                            char_pressed='({})'.format(
-                                character) if self.pressed_key > 0 else '')
-
-                overlay(self.disp_frame, text=overlay_str)
+                            wait_time=ui_wait,
+                            pressed=self.pressed_key if self.pressed_key > 0 else None,
+                            char_pressed='({})'.format(character) if self.pressed_key > 0 else '',
+                            proc_time=elapsed)
+                overlay(self.disp_frame, x=self.frame_width, text=overlay_str, origin='right')
 
                 overlay_str = 'Trial active: {trial} ({n_trials} total)'.format(
                     trial=self.current_trial + 1 if self.current_trial is not None else None,
@@ -380,9 +398,9 @@ class HexAMazer:
             sub_frames = [cv.frame['raw'] for cv in self.cam_views]
 
         if not self.rotate_frame:
-            disp_frame = np.vstack(sub_frames)
+            disp_frame = STACKING_FUN(sub_frames)
         else:
-            disp_frame = np.vstack(sub_frames)
+            disp_frame = STACKING_FUN(sub_frames)
         return disp_frame
 
     def frame_pos(self):
