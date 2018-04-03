@@ -6,7 +6,7 @@ import pandas as pd
 import argparse
 from pathlib import Path
 
-from hexamazer.VideoCapture import VideoCapture
+from VideoCapture import VideoCapture
 
 CAPTURE_MODULE = cv2.VideoCapture
 
@@ -440,7 +440,7 @@ class HexAMazer:
         for cv in self.cam_views:
             cv.store(self.path)
 
-        trials_csv_path = str(self.path) + 'trials.csv'
+        trials_csv_path = str(self.path) + '.trials.csv'
         with open(trials_csv_path, 'w') as trials_csv:
             for t in self.trials:
                 trials_csv.write('{start}, {end}\n'.format(start=t[0], end=t[1]))
