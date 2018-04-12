@@ -17,7 +17,7 @@ LED_THRESHOLD = 70
 MIN_MOUSE_AREA = 50
 MIN_DIST_TO_NODE = 100
 
-DEFAULT_STACKING  = np.vstack
+DEFAULT_STACKING = np.vstack
 
 THICKNESS_MINOR_CONTOUR = 1
 THICKNESS_MAJOR_CONTOUR = 1
@@ -84,10 +84,16 @@ def overlay(frame, text, x=3, y=3, f_scale=1., color=None, origin='left', thickn
     Args:
         frame: numpy array of image
         text: string of (multi-line) text
+        x: start of text overlay in x
+        y: start of text overlay in y
+        f_scale: font scale
+        color: Foreground color
+        origin: Left or right align of coordinates
+        thickness: line thickness
         """
     if color is None:
         if frame.ndim < 3:
-            color = (255, )
+            color = (255,)
         else:
             color = (255, 255, 255)
 
@@ -101,9 +107,9 @@ def overlay(frame, text, x=3, y=3, f_scale=1., color=None, origin='left', thickn
 
     for n, line in enumerate(lines):
         text_size, _ = cv2.getTextSize(line, fontFace=cv2.FONT_HERSHEY_PLAIN,
-                                       fontScale=f_scale, thickness=thickness+1)
+                                       fontScale=f_scale, thickness=thickness + 1)
         if origin == 'right':
-            text_x =  x_ofs - text_size[0]
+            text_x = x_ofs - text_size[0]
         else:
             text_x = x_ofs
 
@@ -128,13 +134,15 @@ def overlay(frame, text, x=3, y=3, f_scale=1., color=None, origin='left', thickn
 
 def centroid(cnt):
     """X, Y coordinates of the centroid of a contour"""
-    M = cv2.moments(cnt)
-    cx = int(M['m10'] / M['m00'])
-    cy = int(M['m01'] / M['m00'])
+    moments = cv2.moments(cnt)
+    cx = int(moments['m10'] / moments['m00'])
+    cy = int(moments['m01'] / moments['m00'])
     return cx, cy
 
+
 def distance(x1, y1, x2, y2):
-    return math.sqrt((x1-x2)**2 + (y1-y2)**2)
+    return math.sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2)
+
 
 class CameraView:
     def __init__(self, name, x, y, width, height, num_frames, led_pos, nodes, thresh_mask=100, thresh_detect=35):
@@ -218,7 +226,7 @@ class CameraView:
                     text='{}, {}\nA: {}'.format(cx, cy, largest_area),
                     x=(min(cx + 15, 700)),
                     y=cy + 15)
-            cv2.circle(self.frame['raw'], (cx, cy), 3, color=(255, 255, 255) )
+            cv2.circle(self.frame['raw'], (cx, cy), 3, color=(255, 255, 255))
 
             # Find closest node
             for node_id, node in self.nodes.items():
@@ -227,10 +235,10 @@ class CameraView:
                     closest_distance = dist
                     closest_node = node_id
 
-        #Label nodes
+        # Label nodes
         for node_id, node in self.nodes.items():
             color = (255, 0, 0) if node_id == closest_node else (255, 255, 255)
-            cv2.circle(self.frame['raw'], (node['x'] - self.x, node['y'] - self.y), MIN_DIST_TO_NODE//2, color)
+            cv2.circle(self.frame['raw'], (node['x'] - self.x, node['y'] - self.y), MIN_DIST_TO_NODE // 2, color)
 
             overlay(self.frame['raw'], text=str(node_id), color=color,
                     x=node['x'] - self.x, y=node['y'] - self.y, f_scale=2.)
@@ -250,19 +258,18 @@ class CameraView:
 class HexAMazer:
     frame_types = ['raw', 'grey', 'val', 'thresh', 'mask', 'masked', 'hsv', 'hue', 'sat']
 
-    def __init__(self, vid_path, display=True, start_frame=0, stacking=DEFAULT_STACKING):
+    def __init__(self, vid_path, display=True, start_frame=0, stacking_fun=DEFAULT_STACKING):
         self.__start_frame = start_frame
 
         self.path = Path(vid_path).resolve()
         if not self.path.exists():
             raise FileNotFoundError(str(self.path))
 
-        self.stacking_fun = stacking
+        self.stacking_fun = stacking_fun
 
         self.capture = CAPTURE_MODULE(vid_path)
-        if hasattr(self.capture, 'start'):
-            self.capture.start()
-
+        # if hasattr(self.capture, 'start'):
+        #     self.capture.start()
 
         self.num_frames = int(self.capture.get(cv2.CAP_PROP_FRAME_COUNT))
         self.frame_width = int(self.capture.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -321,7 +328,7 @@ class HexAMazer:
                     character = chr(self.pressed_key) if self.pressed_key > 0 else None
                 except ValueError:
                     character = '??'
-                elapsed =  (time.time() - frame_proc_time) * 1000
+                elapsed = (time.time() - frame_proc_time) * 1000
                 ui_wait = 1000 / self.__replay_fps
                 frame_proc_time = time.time()
                 overlay_str = '{t}\n' \
@@ -329,7 +336,7 @@ class HexAMazer:
                               'frame: {key}\n' \
                               'paused: {pause}\n' \
                               't_wait: {wait_time:.0f} ms\n' \
-                              't_loop: {proc_time:3.0f} ms\n'\
+                              't_loop: {proc_time:3.0f} ms\n' \
                               'input: {pressed} {char_pressed}' \
                     .format(n=curr_pos,
                             pad=self.__padding,
@@ -446,8 +453,8 @@ class HexAMazer:
     def quit(self):
         self.alive = False
         cv2.destroyAllWindows()
-        if hasattr(self.capture, 'stop'):
-            self.capture.stop()
+        # if hasattr(self.capture, 'stop'):
+        #     self.capture.stop()
 
         for cv in self.cam_views:
             cv.store(self.path)
@@ -458,6 +465,7 @@ class HexAMazer:
                 trials_csv.write('{start}, {end}\n'.format(start=t[0], end=t[1]))
         print('Trial data written to {}'.format(trials_csv_path))
 
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('path')
@@ -467,4 +475,4 @@ if __name__ == '__main__':
     cli_args = parser.parse_args()
     stacking = np.hstack if cli_args.horizontal else DEFAULT_STACKING
 
-    hx = HexAMazer(cli_args.path, stacking=stacking)
+    hx = HexAMazer(cli_args.path, stacking_fun=stacking)
