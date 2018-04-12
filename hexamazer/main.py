@@ -6,8 +6,6 @@ import pandas as pd
 import argparse
 from pathlib import Path
 
-from VideoCapture import VideoCapture
-
 CAPTURE_MODULE = cv2.VideoCapture
 
 kernel_3 = np.ones((3, 3), np.uint8)
@@ -19,7 +17,10 @@ LED_THRESHOLD = 70
 MIN_MOUSE_AREA = 50
 MIN_DIST_TO_NODE = 100
 
-STACKING_FUN = np.hstack
+DEFAULT_STACKING  = np.vstack
+
+THICKNESS_MINOR_CONTOUR = 1
+THICKNESS_MAJOR_CONTOUR = 1
 
 NODES_A = {1: {'use': None, 'x': 73, 'y': 66},
            2: {'use': None, 'x': 211, 'y': 6},
@@ -78,12 +79,19 @@ def fmt_time(s, minimal=False):
 
 
 def overlay(frame, text, x=3, y=3, f_scale=1., color=None, origin='left', thickness=1):
+    """Overlay text onto image. Newline characters are used to split the text string and put on 'new lines'.
+
+    Args:
+        frame: numpy array of image
+        text: string of (multi-line) text
+        """
     if color is None:
         if frame.ndim < 3:
-            color = (255)
+            color = (255, )
         else:
             color = (255, 255, 255)
-    color_bg = [0 for _ in color]
+
+    color_bg = [0 for _ in list(color)]
 
     f_h = int(13 * f_scale)
     x_ofs = x
@@ -119,6 +127,7 @@ def overlay(frame, text, x=3, y=3, f_scale=1., color=None, origin='left', thickn
 
 
 def centroid(cnt):
+    """X, Y coordinates of the centroid of a contour"""
     M = cv2.moments(cnt)
     cx = int(M['m10'] / M['m00'])
     cy = int(M['m01'] / M['m00'])
@@ -135,7 +144,7 @@ class CameraView:
         self.width = width
         self.height = height
         self.thresh_mask = thresh_mask
-        self.thresh_detect = 255 - thresh_detect  # because we invert the image before thresholding
+        self.thresh_detect = 255 - thresh_detect  # because we invert the image before applying the threshold
 
         self.led_pos = (led_pos[0] - x, led_pos[1] - y)
         self.nodes = nodes
@@ -192,7 +201,7 @@ class CameraView:
         # store per-frame results
         self.results['largest_area'][n] = largest_area
         self.results['sum_area'][n] = sum_area
-        cv2.drawContours(self.frame['raw'], contours, -1, (150, 150, 0), 3)
+        cv2.drawContours(self.frame['raw'], contours, -1, (150, 150, 0), THICKNESS_MINOR_CONTOUR)
 
         closest_node = None
         closest_distance = 1e12
@@ -204,7 +213,7 @@ class CameraView:
             self.results['largest_y'][n] = cy
 
             # draw largest contour and contour label
-            cv2.drawContours(self.frame['raw'], [largest_cnt], 0, (0, 0, 255), 3)
+            cv2.drawContours(self.frame['raw'], [largest_cnt], 0, (0, 0, 255), THICKNESS_MAJOR_CONTOUR)
             overlay(self.frame['raw'],
                     text='{}, {}\nA: {}'.format(cx, cy, largest_area),
                     x=(min(cx + 15, 700)),
@@ -241,12 +250,14 @@ class CameraView:
 class HexAMazer:
     frame_types = ['raw', 'grey', 'val', 'thresh', 'mask', 'masked', 'hsv', 'hue', 'sat']
 
-    def __init__(self, vid_path, display=True, start_frame=0):
+    def __init__(self, vid_path, display=True, start_frame=0, stacking=DEFAULT_STACKING):
         self.__start_frame = start_frame
 
         self.path = Path(vid_path).resolve()
         if not self.path.exists():
             raise FileNotFoundError(str(self.path))
+
+        self.stacking_fun = stacking
 
         self.capture = CAPTURE_MODULE(vid_path)
         if hasattr(self.capture, 'start'):
@@ -292,9 +303,8 @@ class HexAMazer:
                 self.frame = self.grab()
 
             if self.frame is None:
-                print('No frame returned.')
-                self.quit()
-                break
+                print('No frame returned, pausing.')
+                self.paused = True
 
             if self.rotate_frame:
                 self.frame = np.rot90(self.frame).copy()
@@ -409,10 +419,12 @@ class HexAMazer:
         except KeyError:
             sub_frames = [cv.frame['raw'] for cv in self.cam_views]
 
-        if not self.rotate_frame:
-            disp_frame = STACKING_FUN(sub_frames)
-        else:
-            disp_frame = STACKING_FUN(sub_frames)
+        # if not self.rotate_frame:
+        #     disp_frame = self.stacking_fun(sub_frames)
+        # else:
+        #     disp_frame = self.stacking_fun(sub_frames)
+
+        disp_frame = self.stacking_fun(sub_frames)
         return disp_frame
 
     def frame_pos(self):
@@ -444,11 +456,15 @@ class HexAMazer:
         with open(trials_csv_path, 'w') as trials_csv:
             for t in self.trials:
                 trials_csv.write('{start}, {end}\n'.format(start=t[0], end=t[1]))
-        print('Trial start/end written to {}'.format(trials_csv_path))
+        print('Trial data written to {}'.format(trials_csv_path))
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('path')
+    parser.add_argument('-M', '--output-mat', action='store_true', help='Store output as matlab .mat file')
+    parser.add_argument('-H', '--horizontal', action='store_true', help='Show sub-frames side-by-side')
 
     cli_args = parser.parse_args()
-    hx = HexAMazer(cli_args.path)
+    stacking = np.hstack if cli_args.horizontal else DEFAULT_STACKING
+
+    hx = HexAMazer(cli_args.path, stacking=stacking)
