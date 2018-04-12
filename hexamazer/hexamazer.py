@@ -466,13 +466,19 @@ class HexAMazer:
         print('Trial data written to {}'.format(trials_csv_path))
 
 
-if __name__ == '__main__':
+def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('path')
-    parser.add_argument('-M', '--output-mat', action='store_true', help='Store output as matlab .mat file')
+    parser.add_argument('-M', '--matlab', action='store_true', help='Store output as matlab .mat file')
     parser.add_argument('-H', '--horizontal', action='store_true', help='Show sub-frames side-by-side')
 
     cli_args = parser.parse_args()
     stacking = np.hstack if cli_args.horizontal else DEFAULT_STACKING
 
-    hx = HexAMazer(cli_args.path, stacking_fun=stacking)
+    if cli_args.matlab:
+        raise NotImplementedError
+
+    HexAMazer(cli_args.path, stacking_fun=stacking)
+
+if __name__ == '__main__':
+    main()
