@@ -303,22 +303,26 @@ class HexAMazer:
         frame_proc_time = time.time()
         while self.alive:
             # if new frames need to be handled
-            if (not self.paused) or self.force_move_frames:
+            if not self.paused or self.force_move_frames:
                 if self.force_move_frames:
                     self.move_rel(self.force_move_frames - 1)
                     self.force_move_frames = 0
-                self.frame = self.grab()
+                rv, frame = self.grab()
 
-            if self.frame is None:
-                print('No frame returned, pausing.')
-                self.paused = True
+                if rv:
+                    self.frame = frame
+                else:
+                    if self.frame is None:
+                        raise IOError('Frame acquisition failed')
+                    self.paused = True
 
-            if self.rotate_frame:
-                self.frame = np.rot90(self.frame).copy()
+                if self.rotate_frame:
+                    self.frame = np.rot90(self.frame).copy()
 
             curr_pos = self.frame_pos()
-            for cv in self.cam_views:
-                cv.update(self.frame, curr_pos)
+            if self.frame is not None:
+                for cv in self.cam_views:
+                    cv.update(self.frame, curr_pos)
 
             if self.display:
                 self.disp_frame = self.gather_cam_views()
@@ -355,7 +359,8 @@ class HexAMazer:
                 overlay(self.disp_frame, text=overlay_str, x=self.frame_width // 4, f_scale=1.5)
 
                 cv2.imshow('Hex-A-Mazer', self.disp_frame)
-                self.process_key(cv2.waitKey(int(1000 / self.__replay_fps)))
+                key = cv2.waitKey(int(1000 / self.__replay_fps))
+                self.process_key(key)
 
     def process_key(self, key):
         if key < 0:
@@ -366,7 +371,7 @@ class HexAMazer:
             self.quit()
 
         # switch to different processing stage
-        elif 59 > key >= 49:
+        elif 58 > key >= 49:
             self.showing = min(int(chr(key)), len(self.frame_types)) - 1
 
         # pause
@@ -447,8 +452,7 @@ class HexAMazer:
         self.capture.set(cv2.CAP_PROP_POS_FRAMES, self.frame_pos() + delta)
 
     def grab(self):
-        rv, frame = self.capture.read()
-        return frame if rv else None
+        return self.capture.read()
 
     def quit(self):
         self.alive = False
@@ -479,6 +483,7 @@ def main():
         raise NotImplementedError
 
     HexAMazer(cli_args.path, stacking_fun=stacking)
+
 
 if __name__ == '__main__':
     main()
