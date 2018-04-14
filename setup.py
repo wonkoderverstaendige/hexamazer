@@ -11,4 +11,4 @@ setup(name='hexamazer',
       install_requires=['numpy', 'pandas'],
       packages=['hexamazer'],
       entry_points="""[console_scripts]
-            hexamazer=hexamazer.hexamazer:main""")
+            hexamazer=hexamazer.main:main""")

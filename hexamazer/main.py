@@ -2,25 +2,18 @@ import cv2
 import math
 import time
 import numpy as np
-import pandas as pd
 import argparse
 from pathlib import Path
 
+from hexamazer.CameraView import CameraView
+from hexamazer.util import fmt_time, overlay
+
 CAPTURE_MODULE = cv2.VideoCapture
 
-kernel_3 = np.ones((3, 3), np.uint8)
-kernel_5 = np.ones((5, 5), np.uint8)
-
-LED_POSITIONS = [(377, 445), (538, 715)]
-LED_THRESHOLD = 70
-
-MIN_MOUSE_AREA = 50
-MIN_DIST_TO_NODE = 100
-
 DEFAULT_STACKING = np.vstack
+DEFAULT_REPLAY_WAIT = 30
 
-THICKNESS_MINOR_CONTOUR = 1
-THICKNESS_MAJOR_CONTOUR = 1
+AUTOPLAY = False
 
 NODES_A = {1: {'use': None, 'x': 73, 'y': 66},
            2: {'use': None, 'x': 211, 'y': 6},
@@ -57,202 +50,7 @@ NODES_B = {6: {'use': None, 'x': 186, 'y': 611},
            23: {'use': None, 'x': 614, 'y': 1173},
            24: {'use': None, 'x': 760, 'y': 1080}}
 
-
-def fmt_time(s, minimal=False):
-    """
-    Args:
-        s: time in seconds (float for fractional)
-        minimal: Flag, if true, only return strings for times > 0, leave rest outs
-    Returns: String formatted 99h 59min 59.9s, where elements < 1 are left out optionally.
-    """
-    ms = s - int(s)
-    s = int(s)
-    if s < 60 and minimal:
-        return "{s:02.3f}s".format(s=s + ms)
-
-    m, s = divmod(s, 60)
-    if m < 60 and minimal:
-        return "{m:02d}min {s:02.3f}s".format(m=m, s=s + ms)
-
-    h, m = divmod(m, 60)
-    return "{h:02d}h {m:02d}min {s:02.3f}s".format(h=h, m=m, s=s + ms)
-
-
-def overlay(frame, text, x=3, y=3, f_scale=1., color=None, origin='left', thickness=1):
-    """Overlay text onto image. Newline characters are used to split the text string and put on 'new lines'.
-
-    Args:
-        frame: numpy array of image
-        text: string of (multi-line) text
-        x: start of text overlay in x
-        y: start of text overlay in y
-        f_scale: font scale
-        color: Foreground color
-        origin: Left or right align of coordinates
-        thickness: line thickness
-        """
-    if color is None:
-        if frame.ndim < 3:
-            color = (255,)
-        else:
-            color = (255, 255, 255)
-
-    color_bg = [0 for _ in list(color)]
-
-    f_h = int(13 * f_scale)
-    x_ofs = x
-    y_ofs = y + f_h
-
-    lines = text.split('\n')
-
-    for n, line in enumerate(lines):
-        text_size, _ = cv2.getTextSize(line, fontFace=cv2.FONT_HERSHEY_PLAIN,
-                                       fontScale=f_scale, thickness=thickness + 1)
-        if origin == 'right':
-            text_x = x_ofs - text_size[0]
-        else:
-            text_x = x_ofs
-
-        # draw text outline
-        cv2.putText(frame,
-                    line, (text_x, y_ofs + n * f_h),
-                    fontFace=cv2.FONT_HERSHEY_PLAIN,
-                    fontScale=f_scale,
-                    color=color_bg,
-                    lineType=cv2.LINE_AA,
-                    thickness=thickness + 1)
-
-        # actual text
-        cv2.putText(frame,
-                    line, (text_x, y_ofs + n * f_h),
-                    fontFace=cv2.FONT_HERSHEY_PLAIN,
-                    fontScale=f_scale,
-                    color=color,
-                    lineType=cv2.LINE_AA,
-                    thickness=thickness)
-
-
-def centroid(cnt):
-    """X, Y coordinates of the centroid of a contour"""
-    moments = cv2.moments(cnt)
-    cx = int(moments['m10'] / moments['m00'])
-    cy = int(moments['m01'] / moments['m00'])
-    return cx, cy
-
-
-def distance(x1, y1, x2, y2):
-    return math.sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2)
-
-
-class CameraView:
-    def __init__(self, name, x, y, width, height, num_frames, led_pos, nodes, thresh_mask=100, thresh_detect=35):
-        self.name = name
-        self.x = x
-        self.y = y
-        self.width = width
-        self.height = height
-        self.thresh_mask = thresh_mask
-        self.thresh_detect = 255 - thresh_detect  # because we invert the image before applying the threshold
-
-        self.led_pos = (led_pos[0] - x, led_pos[1] - y)
-        self.nodes = nodes
-
-        self.use_val_frame = True
-
-        self.frame = {}
-
-        self.results = pd.DataFrame(index=range(num_frames),
-                                    columns=['largest_area', 'largest_x', 'largest_y',
-                                             'sum_area', 'led_state'])
-
-    def update(self, frame, n):
-        sub_frame = frame[self.y:self.y + self.height, self.x:self.x + self.width].copy()
-        self.frame['raw'] = sub_frame
-        self.frame['grey'] = cv2.cvtColor(self.frame['raw'], cv2.COLOR_BGR2GRAY)
-        self.frame['hsv'] = cv2.cvtColor(self.frame['raw'], cv2.COLOR_BGR2HSV)
-        self.frame['hue'] = self.frame['hsv'][:, :, 0]
-        self.frame['sat'] = self.frame['hsv'][:, :, 1]
-        self.frame['val'] = self.frame['hsv'][:, :, 2]
-
-        if not self.use_val_frame:
-            foi = self.frame['grey']
-        else:
-            foi = self.frame['val']
-
-        # on first frame, create mask
-        if n == 1:
-            _, mask = cv2.threshold(foi, self.thresh_mask, 255, cv2.THRESH_BINARY)
-            self.frame['mask'] = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel_3)
-
-        # apply mask to either greyscale or (HS)Value image
-        masked = cv2.bitwise_not(foi) * (self.frame['mask'] // 255)
-        self.frame['masked'] = cv2.morphologyEx(masked, cv2.MORPH_OPEN, kernel_3)
-
-        # threshold masked image to find mouse
-        _, thresh = cv2.threshold(self.frame['masked'], self.thresh_detect, 255, cv2.THRESH_BINARY)
-        self.frame['thresh'] = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel_3)
-
-        # find contours
-        _, contours, hierarchy = cv2.findContours(self.frame['thresh'], cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-
-        # find largest contour
-        largest_cnt, largest_area = None, 0
-        sum_area = 0
-        for cnt in contours:
-            area = int(cv2.contourArea(cnt))
-            if area > MIN_MOUSE_AREA:
-                sum_area += area
-                if area > largest_area:
-                    largest_area = area
-                    largest_cnt = cnt
-
-        # store per-frame results
-        self.results['largest_area'][n] = largest_area
-        self.results['sum_area'][n] = sum_area
-        cv2.drawContours(self.frame['raw'], contours, -1, (150, 150, 0), THICKNESS_MINOR_CONTOUR)
-
-        closest_node = None
-        closest_distance = 1e12
-
-        if largest_cnt is not None:
-            # center coordinates of contour
-            cx, cy = centroid(largest_cnt)
-            self.results['largest_x'][n] = cx
-            self.results['largest_y'][n] = cy
-
-            # draw largest contour and contour label
-            cv2.drawContours(self.frame['raw'], [largest_cnt], 0, (0, 0, 255), THICKNESS_MAJOR_CONTOUR)
-            overlay(self.frame['raw'],
-                    text='{}, {}\nA: {}'.format(cx, cy, largest_area),
-                    x=(min(cx + 15, 700)),
-                    y=cy + 15)
-            cv2.circle(self.frame['raw'], (cx, cy), 3, color=(255, 255, 255))
-
-            # Find closest node
-            for node_id, node in self.nodes.items():
-                dist = distance(cx, cy, node['x'] - self.x, node['y'] - self.y)
-                if dist < closest_distance and dist < MIN_DIST_TO_NODE:
-                    closest_distance = dist
-                    closest_node = node_id
-
-        # Label nodes
-        for node_id, node in self.nodes.items():
-            color = (255, 0, 0) if node_id == closest_node else (255, 255, 255)
-            cv2.circle(self.frame['raw'], (node['x'] - self.x, node['y'] - self.y), MIN_DIST_TO_NODE // 2, color)
-
-            overlay(self.frame['raw'], text=str(node_id), color=color,
-                    x=node['x'] - self.x, y=node['y'] - self.y, f_scale=2.)
-
-        # detect LED
-        led_state = self.frame['grey'][self.led_pos[1], self.led_pos[0]] > LED_THRESHOLD
-        overlay(self.frame['raw'], text='ON' if led_state else 'OFF',
-                x=self.led_pos[0] + 5, y=self.led_pos[1] + 5, f_scale=.6)
-        self.results['led_state'][n] = led_state
-
-    def store(self, path):
-        out_path = str(path) + '.{}.hxm_pickle'.format(self.name)
-        self.results.to_pickle(out_path)
-        print('Results for <{}> stored at {}'.format(self.name, out_path))
+LED_POSITIONS = [(377, 445), (538, 715)]
 
 
 class HexAMazer:
@@ -279,7 +77,7 @@ class HexAMazer:
         self.disp_frame = None
 
         self.__padding = math.floor((math.log(self.num_frames, 10))) + 1
-        self.__replay_fps = int(self.capture.get(cv2.CAP_PROP_FPS))
+        self.__replay_fps = DEFAULT_REPLAY_WAIT  # int(self.capture.get(cv2.CAP_PROP_FPS))
 
         self.cam_views = [CameraView(x=0, y=0, width=800, height=600, name='top', nodes=NODES_A,
                                      num_frames=self.num_frames, led_pos=LED_POSITIONS[0]),
@@ -289,7 +87,7 @@ class HexAMazer:
         self.current_trial = None
 
         self.alive = True
-        self.paused = False
+        self.paused = AUTOPLAY
         self.force_move_frames = 0
         self.display = display
         self.rotate_frame = False
@@ -322,7 +120,7 @@ class HexAMazer:
             curr_pos = self.frame_pos()
             if self.frame is not None:
                 for cv in self.cam_views:
-                    cv.update(self.frame, curr_pos)
+                    cv.update(self.frame, curr_pos, self.current_trial)
 
             if self.display:
                 self.disp_frame = self.gather_cam_views()
@@ -473,14 +271,11 @@ class HexAMazer:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('path')
-    parser.add_argument('-M', '--matlab', action='store_true', help='Store output as matlab .mat file')
+    # parser.add_argument('-M', '--matlab', action='store_true', help='Store output as matlab .mat file')
     parser.add_argument('-H', '--horizontal', action='store_true', help='Show sub-frames side-by-side')
 
     cli_args = parser.parse_args()
     stacking = np.hstack if cli_args.horizontal else DEFAULT_STACKING
-
-    if cli_args.matlab:
-        raise NotImplementedError
 
     HexAMazer(cli_args.path, stacking_fun=stacking)
 
